@@ -28,6 +28,14 @@ const Instruction = enum(u32) {
         const opcode = 0x0000FFFF & int;
         return val & mask == opcode;
     }
+
+    fn from(value: u16) Instruction {
+        inline for (std.meta.fields(Instruction)) |inst| {
+            const en: Instruction = @enumFromInt(inst.value);
+            if (en.is(value)) return en;
+        }
+        unreachable;
+    }
 };
 
 // TODO zig 0.14 update to .empty pattern
@@ -47,54 +55,43 @@ const State = struct {
     sp: u16 = 0,
     stack: [16]u16 = [_]u16{0} ** 16,
 
-    fn instruction(state: State) u16 {
+    fn pcValue(state: State) u16 {
         return std.mem.readInt(u16, state.ram[state.pc..][0..2], .big);
     }
 
     fn step(state: *State) void {
-        const inst = state.instruction();
-        std.log.debug("instruction 0x{X:0>4}: 0x{X:0>4}", .{ state.pc, inst });
+        const instBytes = state.pcValue();
+        const instruction = Instruction.from(instBytes);
+        std.log.debug("instruction 0x{X:0>4}: 0x{X:0>4} -- {}", .{ state.pc, state.ram[state.pc..][0..2], instruction });
 
-        if (Instruction.clear.is(inst)) state.instClear();
-        if (Instruction.load_byte.is(inst)) state.instLoadByte();
-        if (Instruction.load_addr.is(inst)) state.instLoadAddr();
-        if (Instruction.jump.is(inst)) {
-            state.instJump();
-            return;
+        switch (instruction) {
+            .clear => {
+                std.log.debug("\tclear", .{});
+            },
+            .load_byte => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const byte = state.ram[state.pc + 1];
+                state.registers[vx] = byte;
+                std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
+            },
+            .load_addr => {
+                const addr = 0x0FFF & instBytes;
+                state.i = addr;
+                std.log.debug("\tload addr -- I = 0x{X:0>4}", .{addr});
+            },
+            .jump => {
+                const addr = 0x0FFF & instBytes;
+                state.pc = addr;
+                std.log.debug("\tjump -- PC = 0x{X:0>4}", .{addr});
+                std.debug.assert(addr % 2 == 0);
+                return;
+            },
+            .draw => {
+                std.log.debug("\tdraw", .{});
+            },
         }
-        if (Instruction.draw.is(inst)) state.instDraw();
 
         state.pc += 2;
-    }
-
-    fn instClear(_: State) void {
-        std.log.debug("\tclear", .{});
-    }
-
-    fn instLoadByte(state: *State) void {
-        const vx = state.ram[state.pc] & 0x0F;
-        const byte = state.ram[state.pc + 1];
-        state.registers[vx] = byte;
-        std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
-    }
-
-    fn instLoadAddr(state: *State) void {
-        const inst = state.instruction();
-        const addr = 0x0FFF & inst;
-        state.i = addr;
-        std.log.debug("\tload addr -- I = 0x{X:0>4}", .{addr});
-    }
-
-    fn instJump(state: *State) void {
-        const inst = state.instruction();
-        const addr = 0x0FFF & inst;
-        state.pc = addr;
-        std.log.debug("\tjump -- PC = 0x{X:0>4}", .{addr});
-        std.debug.assert(addr % 2 == 0);
-    }
-
-    fn instDraw(_: State) void {
-        std.log.debug("\tdraw", .{});
     }
 };
 

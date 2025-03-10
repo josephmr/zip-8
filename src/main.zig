@@ -17,22 +17,22 @@ test "instruction is" {
 }
 
 const font = [_]u8{
-    0xF0, 0x90, 0x90, 0x90, 0xF0,
-    0x20, 0x60, 0x20, 0x20, 0x70,
-    0xF0, 0x10, 0xF0, 0x80, 0xF0,
-    0xF0, 0x10, 0xF0, 0x10, 0xF0,
-    0x90, 0x90, 0xF0, 0x10, 0x10,
-    0xF0, 0xB0, 0xF0, 0x10, 0xF0,
-    0xF0, 0x80, 0xF0, 0x90, 0xF0,
-    0xF0, 0x10, 0x20, 0x40, 0x40,
-    0xF0, 0x90, 0xF0, 0x90, 0xF0,
-    0xF0, 0x90, 0xF0, 0x10, 0xF0,
-    0xF0, 0x90, 0xF0, 0x90, 0x90,
-    0xE0, 0x90, 0xE0, 0x90, 0xE0,
-    0xF0, 0x80, 0x80, 0x80, 0xF0,
-    0xE0, 0x90, 0x90, 0x90, 0xE0,
-    0xF0, 0x80, 0xF0, 0x80, 0xF0,
-    0xF0, 0x80, 0xF0, 0x80, 0x80,
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0xB0, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 };
 
 const Instruction = enum(u32) {
@@ -109,6 +109,11 @@ const State = struct {
         switch (instruction) {
             .clear => {
                 std.log.debug("\tclear", .{});
+                for (0..state.display.len) |row| {
+                    for (0..8) |col| {
+                        state.display[row][col] = 0x00;
+                    }
+                }
             },
             .load_byte => {
                 const vx = state.ram[state.pc] & 0x0F;
@@ -142,20 +147,38 @@ const State = struct {
             },
             .draw => {
                 const vx = state.ram[state.pc] & 0x0F;
-                std.debug.assert(vx >= 0 and vx <= 0xF);
                 const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
-                std.debug.assert(vy >= 0 and vx <= 0xF);
+
                 const x = state.registers[vx];
                 std.debug.assert(x >= 0 and x <= 64);
                 const y = state.registers[vy];
                 std.debug.assert(y >= 0 and y <= 32);
+
                 const sprite_len = state.ram[state.pc + 1] & 0x0F;
                 const sprite = state.ram[state.i..][0..sprite_len];
                 std.log.debug("\tdraw {any} at {},{} from registers 0x{X} 0x{X}", .{ sprite, x, y, vx, vy });
+
+                // reset flag register
+                state.registers[0xF] = 0;
+
                 for (sprite, y..) |byte, row| {
-                    state.display[row][x / 8] ^= byte;
-                    if (state.display[row][x / 8] & byte >= 0) {
-                        state.registers[0xF] = 1;
+                    const byte_index = @divTrunc(x, 8);
+                    const offset: u3 = @intCast(@rem(x, 8));
+                    if (offset == 0) { // aligned
+                        // test and set flag register before XOR
+                        if (state.display[row][byte_index] & ~byte >= 0) {
+                            state.registers[0xF] = 1;
+                        }
+                        state.display[row][byte_index] ^= byte;
+                    } else { // unaligned
+                        // TODO: set flag register
+
+                        // set bottom offset bits of first byte XOR with top bits of byte
+                        state.display[row][byte_index] ^= byte >> offset;
+                        // set top 8 - offset bits of next byte XOR with bottom bits of byte
+                        // (wrap if necessary)
+                        std.debug.assert(byte_index < 7); // no wrapping handled yet
+                        state.display[row][byte_index + 1] ^= byte << @intCast(@as(u4, 8) - offset);
                     }
                 }
             },
@@ -218,9 +241,8 @@ pub fn main() !void {
     defer rl.closeWindow();
 
     var state = State.empty;
-    try state.loadRom("roms/1-chip8-logo.ch8");
-
-    hexDump(state.ram[0x200..0x310]);
+    // try state.loadRom("roms/1-chip8-logo.ch8");
+    try state.loadRom("roms/2-ibm-logo.ch8");
 
     const thread = try std.Thread.spawn(.{}, process, .{&state});
     std.Thread.detach(thread);

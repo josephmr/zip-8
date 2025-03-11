@@ -39,11 +39,31 @@ const Instruction = enum(u32) {
     // Each instruction is a combination of a bitmask and an opcode.
     // This is used as CHIP-8 does not have a regularly sized opcode.
     clear = 0xFFFF_00E0,
-    load_byte = 0xF000_6000,
-    load_addr = 0xF000_A000,
-    add_byte = 0xF000_7000,
-    draw = 0xF000_D000,
+    ret = 0xFFFF_00EE,
     jump = 0xF000_1000,
+    call = 0xF000_2000,
+    skip_eq_xnn = 0xF000_3000,
+    skip_neq_xnn = 0xF000_4000,
+    skip_eq_xy = 0xF00F_5000,
+    load_byte = 0xF000_6000,
+    add_byte = 0xF000_7000,
+    set_xy = 0xF00F_8000,
+    set_or = 0xF00F_8001,
+    set_and = 0xF00F_8002,
+    set_xor = 0xF00F_8003,
+    add_xy = 0xF00F_8004,
+    sub_xy = 0xF00F_8005,
+    set_sh_right = 0xF00F_8006,
+    sub_yx = 0xF00F_8007,
+    set_sh_left = 0xF00F_800E,
+    skip_neq_xy = 0xF00F_9000,
+    load_addr = 0xF000_A000,
+    draw = 0xF000_D000,
+    add_i = 0xF0FF_F01E,
+    font = 0xF0FF_F029,
+    bcd = 0xF0FF_F033,
+    write = 0xF0FF_F055,
+    read = 0xF0FF_F065,
 
     fn is(inst: Instruction, val: u16) bool {
         const int = @intFromEnum(inst);
@@ -115,6 +135,52 @@ const State = struct {
                     }
                 }
             },
+            .ret => {
+                std.debug.assert(state.sp >= 0);
+                const addr = state.stack[state.sp - 1];
+                state.sp -= 1;
+                state.pc = addr;
+                std.log.debug("\tret -- PC = 0x{X:0>4}", .{addr});
+            },
+            .jump => {
+                const addr = 0x0FFF & instBytes;
+                std.debug.assert(addr % 2 == 0);
+                state.pc = addr;
+                std.log.debug("\tjump -- PC = 0x{X:0>4}", .{addr});
+                return;
+            },
+            .call => {
+                const addr = state.pcValue() & 0x0FFF;
+                state.stack[state.sp] = state.pc;
+                state.sp += 1;
+                state.pc = addr;
+                std.log.debug("\tcall -- PC = 0x{X:0>4}", .{addr});
+                return;
+            },
+            .skip_eq_xnn => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const nn = state.ram[state.pc + 1];
+                if (state.registers[vx] == nn) {
+                    state.pc += 2;
+                }
+                std.log.debug("\tskip_eq_xnn -- {}", .{state.registers[vx] == nn});
+            },
+            .skip_neq_xnn => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const nn = state.ram[state.pc + 1];
+                if (state.registers[vx] != nn) {
+                    state.pc += 2;
+                }
+                std.log.debug("\tskip_neq_xnn -- {}", .{state.registers[vx] != nn});
+            },
+            .skip_eq_xy => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                if (state.registers[vx] == state.registers[vy]) {
+                    state.pc += 2;
+                }
+                std.log.debug("\tskip_eq_xy -- {}", .{state.registers[vx] == state.registers[vy]});
+            },
             .load_byte => {
                 const vx = state.ram[state.pc] & 0x0F;
                 std.debug.assert(vx >= 0 and vx <= 0xF);
@@ -124,35 +190,99 @@ const State = struct {
                 state.registers[vx] = byte;
                 std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
             },
-            .load_addr => {
-                const addr = 0x0FFF & instBytes;
-                state.i = addr;
-                std.log.debug("\tload addr -- I = 0x{X:0>4}", .{addr});
-            },
             .add_byte => {
                 const vx = state.ram[state.pc] & 0x0F;
                 std.debug.assert(vx >= 0 and vx <= 0xF);
 
                 const byte = state.ram[state.pc + 1];
 
-                state.registers[vx] += byte;
+                state.registers[vx] +%= byte;
                 std.log.debug("\tadd byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
             },
-            .jump => {
+            .set_xy => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                state.registers[vx] = state.registers[vy];
+                std.log.debug("\tset V[0x{X}] = V[0x{X}] ({X:0>2}", .{ vx, vy, state.registers[vy] });
+            },
+            .set_or => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                state.registers[vx] |= state.registers[vy];
+                std.log.debug("\tset V[0x{X}] |= V[0x{X}]", .{ vx, vy });
+            },
+            .set_and => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                state.registers[vx] &= state.registers[vy];
+                std.log.debug("\tset V[0x{X}] &= V[0x{X}]", .{ vx, vy });
+            },
+            .set_xor => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                state.registers[vx] ^= state.registers[vy];
+                std.log.debug("\tset V[0x{X}] ^= V[0x{X}]", .{ vx, vy });
+            },
+            .add_xy => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                const result = @addWithOverflow(state.registers[vx], state.registers[vy]);
+                state.registers[vx] = result[0];
+                state.registers[0xF] = result[1];
+                std.log.debug("\tadd_xy V[0x{X}] += V[0x{X}]", .{ vx, vy });
+            },
+            .sub_xy => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                const result = @subWithOverflow(state.registers[vx], state.registers[vy]);
+                state.registers[vx] = result[0];
+                state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
+                std.log.debug("\tsub_xy V[0x{X}] -= V[0x{X}]", .{ vx, vy });
+            },
+            .set_sh_right => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                state.registers[vx] = state.registers[vy];
+                const flag = state.registers[vx] & 0x01;
+                state.registers[vx] = state.registers[vy] >> 1;
+                state.registers[0xF] = flag;
+                std.log.debug("\tshift_right_1 V[0x{X}] = V[0x{X}] >> 1", .{ vx, vy });
+            },
+            .sub_yx => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                const result = @subWithOverflow(state.registers[vy], state.registers[vx]);
+                state.registers[vx] = result[0];
+                state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
+                std.log.debug("\tsub_yx V[0x{X}] = V[0x{X}] - V[0x{X}]", .{ vx, vy, vx });
+            },
+            .set_sh_left => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                const result = @shlWithOverflow(state.registers[vy], 1);
+                state.registers[vx] = result[0];
+                state.registers[0xF] = result[1];
+                std.log.debug("\tshift_left_1 V[0x{X}] = V[0x{X}] << 1", .{ vx, vy });
+            },
+            .skip_neq_xy => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
+                if (state.registers[vx] != state.registers[vy]) {
+                    state.pc += 2;
+                }
+                std.log.debug("\tskip_neq_xy -- {}", .{state.registers[vx] != state.registers[vy]});
+            },
+            .load_addr => {
                 const addr = 0x0FFF & instBytes;
-                std.debug.assert(addr % 2 == 0);
-                state.pc = addr;
-                std.log.debug("\tjump -- PC = 0x{X:0>4}", .{addr});
-                return;
+                state.i = addr;
+                std.log.debug("\tload addr -- I = 0x{X:0>4}", .{addr});
             },
             .draw => {
                 const vx = state.ram[state.pc] & 0x0F;
                 const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
 
-                const x = state.registers[vx];
-                std.debug.assert(x >= 0 and x <= 64);
-                const y = state.registers[vy];
-                std.debug.assert(y >= 0 and y <= 32);
+                const x = state.registers[vx] % 64;
+                const y = state.registers[vy] % 32;
 
                 const sprite_len = state.ram[state.pc + 1] & 0x0F;
                 const sprite = state.ram[state.i..][0..sprite_len];
@@ -163,6 +293,10 @@ const State = struct {
 
                 for (sprite, y..) |byte, row| {
                     const byte_index = @divTrunc(x, 8);
+
+                    // Do not wrap sprites that clip
+                    if (byte_index > 7) continue;
+
                     const offset: u3 = @intCast(@rem(x, 8));
                     if (offset == 0) { // aligned
                         // test and set flag register before XOR
@@ -173,13 +307,52 @@ const State = struct {
                     } else { // unaligned
                         // TODO: set flag register
 
+                        if (state.display[row][byte_index] & ~byte >> offset >= 0) {
+                            state.registers[0xF] = 1;
+                        }
                         // set bottom offset bits of first byte XOR with top bits of byte
                         state.display[row][byte_index] ^= byte >> offset;
                         // set top 8 - offset bits of next byte XOR with bottom bits of byte
-                        // (wrap if necessary)
-                        std.debug.assert(byte_index < 7); // no wrapping handled yet
+                        if (byte_index == 7) continue;
+                        if (state.display[row][byte_index + 1] & ~byte >> offset >= 0) {
+                            state.registers[0xF] = 1;
+                        }
                         state.display[row][byte_index + 1] ^= byte << @intCast(@as(u4, 8) - offset);
                     }
+                }
+            },
+            .add_i => {
+                const vx = state.ram[state.pc] & 0x0F;
+                state.i += state.registers[vx];
+                std.log.debug("\tadd_i I += V[0x{X}]", .{vx});
+            },
+            .font => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const sprite_num: u4 = @intCast(state.registers[vx] & 0x0F);
+                state.i = 0x0000 + sprite_num * 5;
+                std.log.debug("\tfont I = 0x{X:0>4} -- sprite {}", .{ state.i, sprite_num });
+            },
+            .bcd => {
+                const vx = state.ram[state.pc] & 0x0F;
+                const hundreds = (state.registers[vx] / 100) % 10;
+                const tens = (state.registers[vx] / 10) % 10;
+                const ones = (state.registers[vx]) % 10;
+                state.ram[state.i] = hundreds;
+                state.ram[state.i + 1] = tens;
+                state.ram[state.i + 2] = ones;
+            },
+            .write => {
+                const vx = state.ram[state.pc] & 0x0F;
+                for (0..vx + 1) |index| {
+                    state.ram[state.i] = state.registers[index];
+                    state.i += 1;
+                }
+            },
+            .read => {
+                const vx = state.ram[state.pc] & 0x0F;
+                for (0..vx + 1) |index| {
+                    state.registers[index] = state.ram[state.i];
+                    state.i += 1;
                 }
             },
         }
@@ -229,7 +402,7 @@ fn hexDump(buf: []const u8) void {
 fn process(state: *State) void {
     while (true) {
         state.step();
-        std.Thread.sleep(std.time.ns_per_s / 2);
+        // std.Thread.sleep(std.time.ns_per_s / 4);
     }
 }
 
@@ -242,7 +415,9 @@ pub fn main() !void {
 
     var state = State.empty;
     // try state.loadRom("roms/1-chip8-logo.ch8");
-    try state.loadRom("roms/2-ibm-logo.ch8");
+    // try state.loadRom("roms/2-ibm-logo.ch8");
+    // try state.loadRom("roms/3-corax+.ch8");
+    try state.loadRom("roms/4-flags.ch8");
 
     const thread = try std.Thread.spawn(.{}, process, .{&state});
     std.Thread.detach(thread);

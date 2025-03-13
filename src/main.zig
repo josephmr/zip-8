@@ -16,6 +16,25 @@ test "instruction is" {
     try std.testing.expect(!Instruction.load_byte.is(0x00E0));
 }
 
+const keys = [_]rl.KeyboardKey{
+    rl.KeyboardKey.x,
+    rl.KeyboardKey.one,
+    rl.KeyboardKey.two,
+    rl.KeyboardKey.three,
+    rl.KeyboardKey.q,
+    rl.KeyboardKey.w,
+    rl.KeyboardKey.e,
+    rl.KeyboardKey.a,
+    rl.KeyboardKey.s,
+    rl.KeyboardKey.d,
+    rl.KeyboardKey.z,
+    rl.KeyboardKey.c,
+    rl.KeyboardKey.four,
+    rl.KeyboardKey.r,
+    rl.KeyboardKey.f,
+    rl.KeyboardKey.v,
+};
+
 const font = [_]u8{
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
     0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -58,7 +77,15 @@ const Instruction = enum(u32) {
     set_sh_left = 0xF00F_800E,
     skip_neq_xy = 0xF00F_9000,
     load_addr = 0xF000_A000,
+    jump_v0 = 0xF000_B000,
+    rand = 0xF000_C000,
     draw = 0xF000_D000,
+    skip_input = 0xF0FF_E09E,
+    skip_not_input = 0xF0FF_E0A1,
+    input = 0xF0FF_F00A,
+    read_delay = 0xF0FF_F007,
+    set_delay = 0xF0FF_F015,
+    set_sound = 0xF0FF_F018,
     add_i = 0xF0FF_F01E,
     font = 0xF0FF_F029,
     bcd = 0xF0FF_F033,
@@ -77,6 +104,7 @@ const Instruction = enum(u32) {
             const en: Instruction = @enumFromInt(inst.value);
             if (en.is(value)) return en;
         }
+        std.log.debug("Failed to find matching instruction: 0x{X:0>4}", .{value});
         unreachable;
     }
 };
@@ -86,9 +114,15 @@ const State = struct {
 
     // registers
     registers: [16]u8,
-    sound: u8,
-    delay: u8,
     i: u16,
+
+    // special sound/delay registers and their mutexes
+    sound: u8,
+    sound_mutex: std.Thread.Mutex,
+    sound_condition: std.Thread.Condition,
+    delay: u8,
+    delay_mutex: std.Thread.Mutex,
+    delay_condition: std.Thread.Condition,
 
     // program counter
     pc: u16,
@@ -100,17 +134,33 @@ const State = struct {
     // display buffer
     display: [32][8]u8,
 
+    // rng generator
+    rng: std.Random.DefaultPrng,
+
     pub const empty: State = .{
         .ram = font ++ [_]u8{0} ** (4096 - font.len),
         .registers = @splat(0),
         .sound = 0,
+        .sound_mutex = std.Thread.Mutex{},
+        .sound_condition = std.Thread.Condition{},
         .delay = 0,
+        .delay_mutex = std.Thread.Mutex{},
+        .delay_condition = std.Thread.Condition{},
         .i = 0,
         .pc = 0x200,
         .sp = 0,
         .stack = @splat(0),
         .display = @splat(@splat(0)),
+        .rng = undefined,
     };
+
+    fn init() !State {
+        var state = State.empty;
+        var seed: u64 = undefined;
+        try std.posix.getrandom(std.mem.asBytes(&seed));
+        state.rng = std.Random.DefaultPrng.init(seed);
+        return state;
+    }
 
     fn loadRom(state: *State, path: []const u8) !void {
         const read = try std.fs.cwd().readFile(path, state.ram[0x200..]);
@@ -125,6 +175,9 @@ const State = struct {
         const instBytes = state.pcValue();
         const instruction = Instruction.from(instBytes);
         std.log.debug("instruction 0x{X:0>4}: 0x{X:0>2}{X:0>2} -- {}", .{ state.pc, state.ram[state.pc], state.ram[state.pc + 1], instruction });
+
+        const vx = state.ram[state.pc] & 0x0F;
+        const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
 
         switch (instruction) {
             .clear => {
@@ -144,7 +197,6 @@ const State = struct {
             },
             .jump => {
                 const addr = 0x0FFF & instBytes;
-                std.debug.assert(addr % 2 == 0);
                 state.pc = addr;
                 std.log.debug("\tjump -- PC = 0x{X:0>4}", .{addr});
                 return;
@@ -158,7 +210,6 @@ const State = struct {
                 return;
             },
             .skip_eq_xnn => {
-                const vx = state.ram[state.pc] & 0x0F;
                 const nn = state.ram[state.pc + 1];
                 if (state.registers[vx] == nn) {
                     state.pc += 2;
@@ -166,7 +217,6 @@ const State = struct {
                 std.log.debug("\tskip_eq_xnn -- {}", .{state.registers[vx] == nn});
             },
             .skip_neq_xnn => {
-                const vx = state.ram[state.pc] & 0x0F;
                 const nn = state.ram[state.pc + 1];
                 if (state.registers[vx] != nn) {
                     state.pc += 2;
@@ -174,15 +224,12 @@ const State = struct {
                 std.log.debug("\tskip_neq_xnn -- {}", .{state.registers[vx] != nn});
             },
             .skip_eq_xy => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 if (state.registers[vx] == state.registers[vy]) {
                     state.pc += 2;
                 }
                 std.log.debug("\tskip_eq_xy -- {}", .{state.registers[vx] == state.registers[vy]});
             },
             .load_byte => {
-                const vx = state.ram[state.pc] & 0x0F;
                 std.debug.assert(vx >= 0 and vx <= 0xF);
 
                 const byte = state.ram[state.pc + 1];
@@ -191,7 +238,6 @@ const State = struct {
                 std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
             },
             .add_byte => {
-                const vx = state.ram[state.pc] & 0x0F;
                 std.debug.assert(vx >= 0 and vx <= 0xF);
 
                 const byte = state.ram[state.pc + 1];
@@ -200,48 +246,34 @@ const State = struct {
                 std.log.debug("\tadd byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
             },
             .set_xy => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 state.registers[vx] = state.registers[vy];
                 std.log.debug("\tset V[0x{X}] = V[0x{X}] ({X:0>2}", .{ vx, vy, state.registers[vy] });
             },
             .set_or => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 state.registers[vx] |= state.registers[vy];
                 std.log.debug("\tset V[0x{X}] |= V[0x{X}]", .{ vx, vy });
             },
             .set_and => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 state.registers[vx] &= state.registers[vy];
                 std.log.debug("\tset V[0x{X}] &= V[0x{X}]", .{ vx, vy });
             },
             .set_xor => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 state.registers[vx] ^= state.registers[vy];
                 std.log.debug("\tset V[0x{X}] ^= V[0x{X}]", .{ vx, vy });
             },
             .add_xy => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 const result = @addWithOverflow(state.registers[vx], state.registers[vy]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = result[1];
                 std.log.debug("\tadd_xy V[0x{X}] += V[0x{X}]", .{ vx, vy });
             },
             .sub_xy => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 const result = @subWithOverflow(state.registers[vx], state.registers[vy]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
                 std.log.debug("\tsub_xy V[0x{X}] -= V[0x{X}]", .{ vx, vy });
             },
             .set_sh_right => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 state.registers[vx] = state.registers[vy];
                 const flag = state.registers[vx] & 0x01;
                 state.registers[vx] = state.registers[vy] >> 1;
@@ -249,24 +281,18 @@ const State = struct {
                 std.log.debug("\tshift_right_1 V[0x{X}] = V[0x{X}] >> 1", .{ vx, vy });
             },
             .sub_yx => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 const result = @subWithOverflow(state.registers[vy], state.registers[vx]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
                 std.log.debug("\tsub_yx V[0x{X}] = V[0x{X}] - V[0x{X}]", .{ vx, vy, vx });
             },
             .set_sh_left => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 const result = @shlWithOverflow(state.registers[vy], 1);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = result[1];
                 std.log.debug("\tshift_left_1 V[0x{X}] = V[0x{X}] << 1", .{ vx, vy });
             },
             .skip_neq_xy => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
                 if (state.registers[vx] != state.registers[vy]) {
                     state.pc += 2;
                 }
@@ -277,10 +303,16 @@ const State = struct {
                 state.i = addr;
                 std.log.debug("\tload addr -- I = 0x{X:0>4}", .{addr});
             },
+            .jump_v0 => {
+                const addr = 0x0FFF & instBytes;
+                state.pc = state.registers[0x0] + addr;
+                return;
+            },
+            .rand => {
+                const kk = state.ram[state.pc + 1];
+                state.registers[vx] = @as(u8, @truncate(state.rng.next())) & kk;
+            },
             .draw => {
-                const vx = state.ram[state.pc] & 0x0F;
-                const vy = (state.ram[state.pc + 1] & 0xF0) >> 4;
-
                 const x = state.registers[vx] % 64;
                 const y = state.registers[vy] % 32;
 
@@ -296,6 +328,7 @@ const State = struct {
 
                     // Do not wrap sprites that clip
                     if (byte_index > 7) continue;
+                    if (row > 31) continue;
 
                     const offset: u3 = @intCast(@rem(x, 8));
                     if (offset == 0) { // aligned
@@ -305,8 +338,6 @@ const State = struct {
                         }
                         state.display[row][byte_index] ^= byte;
                     } else { // unaligned
-                        // TODO: set flag register
-
                         if (state.display[row][byte_index] & ~byte >> offset >= 0) {
                             state.registers[0xF] = 1;
                         }
@@ -321,19 +352,52 @@ const State = struct {
                     }
                 }
             },
+            .skip_input => {
+                std.log.debug("\tchecking for IS key pressed: {} {}", .{ state.registers[vx], keys[state.registers[vx]] });
+                if (rl.isKeyDown(keys[state.registers[vx]])) {
+                    std.log.debug("\t\tskipping instruction!", .{});
+                    state.pc += 2;
+                }
+            },
+            .skip_not_input => {
+                std.log.debug("\tchecking for NOT key pressed: {} {}", .{ state.registers[vx], keys[state.registers[vx]] });
+                if (rl.isKeyUp(keys[state.registers[vx]])) {
+                    std.log.debug("\t\tskipping instruction!", .{});
+                    state.pc += 2;
+                }
+            },
+            .input => {
+                inf: while (true) {
+                    for (keys, 0..) |key, value| {
+                        if (rl.isKeyReleased(key)) {
+                            state.registers[vx] = @intCast(value);
+                            break :inf;
+                        }
+                    }
+                }
+            },
+            .read_delay => {
+                state.registers[vx] = state.delay;
+            },
+            .set_delay => {
+                state.delay_mutex.lock();
+                defer state.delay_mutex.unlock();
+                state.delay = state.registers[vx];
+                state.delay_condition.signal();
+            },
+            .set_sound => {
+                state.sound = state.registers[vx];
+            },
             .add_i => {
-                const vx = state.ram[state.pc] & 0x0F;
                 state.i += state.registers[vx];
                 std.log.debug("\tadd_i I += V[0x{X}]", .{vx});
             },
             .font => {
-                const vx = state.ram[state.pc] & 0x0F;
                 const sprite_num: u4 = @intCast(state.registers[vx] & 0x0F);
                 state.i = 0x0000 + sprite_num * 5;
                 std.log.debug("\tfont I = 0x{X:0>4} -- sprite {}", .{ state.i, sprite_num });
             },
             .bcd => {
-                const vx = state.ram[state.pc] & 0x0F;
                 const hundreds = (state.registers[vx] / 100) % 10;
                 const tens = (state.registers[vx] / 10) % 10;
                 const ones = (state.registers[vx]) % 10;
@@ -342,14 +406,12 @@ const State = struct {
                 state.ram[state.i + 2] = ones;
             },
             .write => {
-                const vx = state.ram[state.pc] & 0x0F;
                 for (0..vx + 1) |index| {
                     state.ram[state.i] = state.registers[index];
                     state.i += 1;
                 }
             },
             .read => {
-                const vx = state.ram[state.pc] & 0x0F;
                 for (0..vx + 1) |index| {
                     state.registers[index] = state.ram[state.i];
                     state.i += 1;
@@ -402,7 +464,40 @@ fn hexDump(buf: []const u8) void {
 fn process(state: *State) void {
     while (true) {
         state.step();
-        // std.Thread.sleep(std.time.ns_per_s / 4);
+        std.Thread.sleep(std.time.ns_per_s / 500);
+    }
+}
+
+fn sound_timer(state: *State) void {
+    // TODO: implement sound timer like delay -- maybe comptime?
+    _ = state;
+}
+
+fn delay_timer(state: *State) void {
+    const timer_wait_ns = std.time.ns_per_s / 60;
+
+    while (true) {
+        state.delay_mutex.lock();
+        while (state.delay == 0) {
+            state.delay_condition.wait(&state.delay_mutex);
+        }
+        state.delay_mutex.unlock();
+        var wait_time: i128 = timer_wait_ns;
+        var now: i128 = undefined;
+        while (state.delay > 0) {
+            std.Thread.sleep(@intCast(wait_time));
+            now = std.time.nanoTimestamp();
+            state.delay_mutex.lock();
+            if (state.delay > 0) {
+                state.delay -= 1;
+            }
+            state.delay_mutex.unlock();
+
+            const next_wait_time = std.time.nanoTimestamp() - now;
+            if (next_wait_time < timer_wait_ns) {
+                wait_time = next_wait_time;
+            }
+        }
     }
 }
 
@@ -413,14 +508,25 @@ pub fn main() !void {
     rl.initWindow(screenWidth, screenHeight, "zip-8");
     defer rl.closeWindow();
 
-    var state = State.empty;
+    var state = try State.init();
     // try state.loadRom("roms/1-chip8-logo.ch8");
     // try state.loadRom("roms/2-ibm-logo.ch8");
     // try state.loadRom("roms/3-corax+.ch8");
-    try state.loadRom("roms/4-flags.ch8");
+    // try state.loadRom("roms/4-flags.ch8");
+    try state.loadRom("roms/5-quirks.ch8");
+    // try state.loadRom("roms/maze.ch8");
+    // try state.loadRom("roms/airplane.ch8"); // not working
+    // try state.loadRom("roms/rps.ch8");
+    // try state.loadRom("roms/br8kout.ch8"); // not working
 
     const thread = try std.Thread.spawn(.{}, process, .{&state});
     std.Thread.detach(thread);
+
+    const sound_timer_thread = try std.Thread.spawn(.{}, sound_timer, .{&state});
+    std.Thread.detach(sound_timer_thread);
+
+    const delay_timer_thread = try std.Thread.spawn(.{}, delay_timer, .{&state});
+    std.Thread.detach(delay_timer_thread);
 
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();

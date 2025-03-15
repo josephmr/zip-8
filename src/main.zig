@@ -393,7 +393,7 @@ const State = struct {
                 std.log.debug("\tadd_i I += V[0x{X}]", .{vx});
             },
             .font => {
-                const sprite_num: u4 = @intCast(state.registers[vx] & 0x0F);
+                const sprite_num: u16 = state.registers[vx] & 0x0F;
                 state.i = 0x0000 + sprite_num * 5;
                 std.log.debug("\tfont I = 0x{X:0>4} -- sprite {}", .{ state.i, sprite_num });
             },
@@ -493,9 +493,9 @@ fn delay_timer(state: *State) void {
             }
             state.delay_mutex.unlock();
 
-            const next_wait_time = std.time.nanoTimestamp() - now;
-            if (next_wait_time < timer_wait_ns) {
-                wait_time = next_wait_time;
+            const time_elapsed = std.time.nanoTimestamp() - now;
+            if (time_elapsed < timer_wait_ns) {
+                wait_time = timer_wait_ns - time_elapsed;
             }
         }
     }
@@ -513,11 +513,12 @@ pub fn main() !void {
     // try state.loadRom("roms/2-ibm-logo.ch8");
     // try state.loadRom("roms/3-corax+.ch8");
     // try state.loadRom("roms/4-flags.ch8");
-    try state.loadRom("roms/5-quirks.ch8");
+    // try state.loadRom("roms/5-quirks.ch8");
     // try state.loadRom("roms/maze.ch8");
-    // try state.loadRom("roms/airplane.ch8"); // not working
+    try state.loadRom("roms/airplane.ch8"); // not working
     // try state.loadRom("roms/rps.ch8");
     // try state.loadRom("roms/br8kout.ch8"); // not working
+    // try state.loadRom("roms/delay_timer_test.ch8");
 
     const thread = try std.Thread.spawn(.{}, process, .{&state});
     std.Thread.detach(thread);

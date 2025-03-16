@@ -50,7 +50,7 @@ const font = [_]u8{
     0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
     0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
     0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-    0xF0, 0xB0, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
     0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
     0xF0, 0x10, 0x20, 0x40, 0x40, // 7
     0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
@@ -343,14 +343,10 @@ const State = struct {
         switch (instruction) {
             .clear => {
                 std.log.debug("\tclear", .{});
-                for (0..state.display.len) |row| {
-                    for (0..8) |col| {
-                        state.display[row][col] = 0x00;
-                    }
-                }
+                state.display = @splat(@splat(0));
             },
             .ret => {
-                std.debug.assert(state.sp >= 0);
+                std.debug.assert(state.sp > 0);
                 state.sp -= 1;
                 const addr = state.stack[state.sp];
                 state.pc = addr;

@@ -3,6 +3,8 @@ const rl = @import("raylib");
 const rg = @import("raygui");
 
 var text_font: rl.Font = undefined;
+const debug = false;
+const instructions_per_frame = if (debug) 1 else 11;
 const font_size = 20;
 const resolution_multiplier = 14;
 const game_width = 64 * resolution_multiplier;
@@ -283,13 +285,9 @@ const State = struct {
     registers: [16]u8,
     i: u16,
 
-    // special sound/delay registers and their mutexes
+    // special sound/delay registers
     sound: u8,
-    sound_mutex: std.Thread.Mutex,
-    sound_condition: std.Thread.Condition,
     delay: u8,
-    delay_mutex: std.Thread.Mutex,
-    delay_condition: std.Thread.Condition,
 
     // program counter
     pc: u16,
@@ -308,11 +306,7 @@ const State = struct {
         .ram = font ++ [_]u8{0} ** (4096 - font.len),
         .registers = @splat(0),
         .sound = 0,
-        .sound_mutex = std.Thread.Mutex{},
-        .sound_condition = std.Thread.Condition{},
         .delay = 0,
-        .delay_mutex = std.Thread.Mutex{},
-        .delay_condition = std.Thread.Condition{},
         .i = 0,
         .pc = 0x200,
         .sp = 0,
@@ -531,23 +525,19 @@ const State = struct {
                 }
             },
             .input => {
-                inf: while (true) {
-                    for (keys, 0..) |key, value| {
-                        if (rl.isKeyReleased(key)) {
-                            state.registers[vx] = @intCast(value);
-                            break :inf;
-                        }
+                for (keys, 0..) |key, value| {
+                    if (rl.isKeyReleased(key)) {
+                        state.registers[vx] = @intCast(value);
+                        state.pc += 2;
                     }
                 }
+                return;
             },
             .read_delay => {
                 state.registers[vx] = state.delay;
             },
             .set_delay => {
-                state.delay_mutex.lock();
-                defer state.delay_mutex.unlock();
                 state.delay = state.registers[vx];
-                state.delay_condition.signal();
             },
             .set_sound => {
                 state.sound = state.registers[vx];
@@ -731,43 +721,7 @@ fn hexDump(buf: []const u8) void {
     }
 }
 
-fn sound_timer(state: *State) void {
-    // TODO: implement sound timer like delay -- maybe comptime?
-    _ = state;
-}
-
-fn delay_timer(state: *State) void {
-    const timer_wait_ns = std.time.ns_per_s / 60;
-
-    while (true) {
-        state.delay_mutex.lock();
-        while (state.delay == 0) {
-            state.delay_condition.wait(&state.delay_mutex);
-        }
-        state.delay_mutex.unlock();
-        var wait_time: i128 = timer_wait_ns;
-        var now: i128 = undefined;
-        while (state.delay > 0) {
-            std.Thread.sleep(@intCast(wait_time));
-            now = std.time.nanoTimestamp();
-            state.delay_mutex.lock();
-            if (state.delay > 0) {
-                state.delay -= 1;
-            }
-            state.delay_mutex.unlock();
-
-            const time_elapsed = std.time.nanoTimestamp() - now;
-            if (time_elapsed < timer_wait_ns) {
-                wait_time = timer_wait_ns - time_elapsed;
-            }
-        }
-    }
-}
-
 pub fn main() !void {
-    rl.setConfigFlags(rl.ConfigFlags{
-        .msaa_4x_hint = true,
-    });
     rl.initWindow(game_width + gui_width, game_height + gui_height, "zip-8");
     defer rl.closeWindow();
 
@@ -779,36 +733,42 @@ pub fn main() !void {
     // try state.loadRom("roms/2-ibm-logo.ch8");
     // try state.loadRom("roms/3-corax+.ch8");
     // try state.loadRom("roms/4-flags.ch8");
-    // try state.loadRom("roms/5-quirks.ch8");
+    try state.loadRom("roms/5-quirks.ch8");
     // try state.loadRom("roms/maze.ch8");
-    // try state.loadRom("roms/airplane.ch8"); // not working
+    // try state.loadRom("roms/airplane.ch8");
     // try state.loadRom("roms/rps.ch8");
-    try state.loadRom("roms/br8kout.ch8"); // not working
+    // try state.loadRom("roms/br8kout.ch8");
     // try state.loadRom("roms/delay_timer_test.ch8");
     // try state.loadRom("roms/draw_offset.ch8");
 
-    const sound_timer_thread = try std.Thread.spawn(.{}, sound_timer, .{&state});
-    std.Thread.detach(sound_timer_thread);
-
-    const delay_timer_thread = try std.Thread.spawn(.{}, delay_timer, .{&state});
-    std.Thread.detach(delay_timer_thread);
-
+    var has_drawn = false;
     rl.setTargetFPS(60);
-    var should_step = true;
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        rl.clearBackground(rl.Color.black);
-        state.draw();
-
-        if (rl.isKeyPressed(rl.KeyboardKey.s)) {
-            should_step = true;
+        if (state.delay > 0) {
+            state.delay -= 1;
+        }
+        if (state.sound > 0) {
+            state.sound -= 1;
         }
 
-        if (should_step) {
+        // draw once before starting to step
+        if (!has_drawn) {
+            state.draw();
+            has_drawn = true;
+            continue;
+        }
+
+        if (debug and !rl.isKeyPressed(rl.KeyboardKey.s)) {
+            state.draw();
+            continue;
+        }
+
+        for (0..instructions_per_frame) |_| {
             state.step();
-            should_step = true;
         }
+        state.draw();
     }
 }

@@ -1,7 +1,14 @@
 const std = @import("std");
 const rl = @import("raylib");
+const rg = @import("raygui");
 
-const resolution_multiplier = 8;
+var text_font: rl.Font = undefined;
+const font_size = 20;
+const resolution_multiplier = 14;
+const game_width = 64 * resolution_multiplier;
+const game_height = 32 * resolution_multiplier;
+const gui_width = 32 * resolution_multiplier;
+const gui_height = 32 * resolution_multiplier;
 
 test "instruction is" {
     try std.testing.expect(Instruction.clear.is(0x00E0));
@@ -54,6 +61,8 @@ const font = [_]u8{
     0xF0, 0x80, 0xF0, 0x80, 0x80, // F
 };
 
+const InstructionError = error{Invalid};
+
 const Instruction = enum(u32) {
     // Each instruction is a combination of a bitmask and an opcode.
     // This is used as CHIP-8 does not have a regularly sized opcode.
@@ -82,8 +91,8 @@ const Instruction = enum(u32) {
     draw = 0xF000_D000,
     skip_input = 0xF0FF_E09E,
     skip_not_input = 0xF0FF_E0A1,
-    input = 0xF0FF_F00A,
     read_delay = 0xF0FF_F007,
+    input = 0xF0FF_F00A,
     set_delay = 0xF0FF_F015,
     set_sound = 0xF0FF_F018,
     add_i = 0xF0FF_F01E,
@@ -99,13 +108,171 @@ const Instruction = enum(u32) {
         return val & mask == opcode;
     }
 
-    fn from(value: u16) Instruction {
+    fn from(value: u16) !Instruction {
         inline for (std.meta.fields(Instruction)) |inst| {
             const en: Instruction = @enumFromInt(inst.value);
             if (en.is(value)) return en;
         }
-        std.log.debug("Failed to find matching instruction: 0x{X:0>4}", .{value});
-        unreachable;
+        return InstructionError.Invalid;
+    }
+
+    fn text(pc: u16, value: u16) [:0]const u8 {
+        const inst = Instruction.from(value) catch return "INVALID";
+        switch (inst) {
+            .clear => {
+                return rl.textFormat("%04X -- CLR", .{pc});
+            },
+            .ret => {
+                return rl.textFormat("%04X -- RET", .{pc});
+            },
+            .jump => {
+                const nnn = 0x0FFF & value;
+                return rl.textFormat("%04X -- JMP\t#%03X", .{ pc, nnn });
+            },
+            .call => {
+                const nnn = 0x0FFF & value;
+                return rl.textFormat("%04X -- CALL\t#%04X", .{ pc, nnn });
+            },
+            .skip_eq_xnn => {
+                const vx = (0x0F00 & value) >> 8;
+                const nn = 0x00FF & value;
+                return rl.textFormat("%04X -- SKEQ\tV%X, #%02X", .{ pc, vx, nn });
+            },
+            .skip_neq_xnn => {
+                const vx = (0x0F00 & value) >> 8;
+                const nn = 0x00FF & value;
+                return rl.textFormat("%04X -- SKNEQ\tV%X, #%02X", .{ pc, vx, nn });
+            },
+            .skip_eq_xy => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SKEQ\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .load_byte => {
+                const vx = (0x0F00 & value) >> 8;
+                const nn = 0x00FF & value;
+                return rl.textFormat("%04X -- LD\tV%X, #%02X", .{ pc, vx, nn });
+            },
+            .add_byte => {
+                const vx = (0x0F00 & value) >> 8;
+                const nn = 0x00FF & value;
+                return rl.textFormat("%04X -- ADD\tV%X, #%02X", .{ pc, vx, nn });
+            },
+            .set_xy => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- LD\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .set_or => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- OR\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .set_and => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- AND\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .set_xor => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- XOR\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .add_xy => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- ADD\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .sub_xy => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SUB\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .set_sh_right => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SHR\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .sub_yx => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SUB\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .set_sh_left => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SHL\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .skip_neq_xy => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                return rl.textFormat("%04X -- SKNEQ\tV%X, V%X", .{ pc, vx, vy });
+            },
+            .load_addr => {
+                const nnn = 0x0FFF & value;
+                return rl.textFormat("%04X -- LD\tI, #%04X", .{ pc, nnn });
+            },
+            .jump_v0 => {
+                const nnn = 0x0FFF & value;
+                return rl.textFormat("%04X -- JMP\tV0 + #%04X", .{ pc, nnn });
+            },
+            .rand => {
+                const vx = (0x0F00 & value) >> 8;
+                const nn = 0x00FF & value;
+                return rl.textFormat("%04X -- RAND\tV%X, #%02X", .{ pc, vx, nn });
+            },
+            .draw => {
+                const vx = (0x0F00 & value) >> 8;
+                const vy = (0x00F0 & value) >> 4;
+                const n = (0x000F) & value;
+                return rl.textFormat("%04X -- DRAW\tV%X, V%X, #%02X", .{ pc, vx, vy, n });
+            },
+            .skip_input => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- SKINP\tV%X", .{ pc, vx });
+            },
+            .skip_not_input => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- SKNINP\tV%X", .{ pc, vx });
+            },
+            .read_delay => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- RDL\tV%X", .{ pc, vx });
+            },
+            .input => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- INP\tV%X", .{ pc, vx });
+            },
+            .set_delay => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- SDEL\tV%X", .{ pc, vx });
+            },
+            .set_sound => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- SSD\tV%X", .{ pc, vx });
+            },
+            .add_i => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- ADD\tI, V%X", .{ pc, vx });
+            },
+            .font => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- FNT\tI, V%X", .{ pc, vx });
+            },
+            .bcd => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- BCD\tI, V%X", .{ pc, vx });
+            },
+            .write => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- LD\tI, V0 -> V%X", .{ pc, vx });
+            },
+            .read => {
+                const vx = (0x0F00 & value) >> 8;
+                return rl.textFormat("%04X -- FILL\tV0 -> V%X, I", .{ pc, vx });
+            },
+        }
+        return "";
     }
 };
 
@@ -173,7 +340,7 @@ const State = struct {
 
     fn step(state: *State) void {
         const instBytes = state.pcValue();
-        const instruction = Instruction.from(instBytes);
+        const instruction = Instruction.from(instBytes) catch unreachable;
         std.log.debug("instruction 0x{X:0>4}: 0x{X:0>2}{X:0>2} -- {}", .{ state.pc, state.ram[state.pc], state.ram[state.pc + 1], instruction });
 
         const vx = state.ram[state.pc] & 0x0F;
@@ -190,8 +357,8 @@ const State = struct {
             },
             .ret => {
                 std.debug.assert(state.sp >= 0);
-                const addr = state.stack[state.sp - 1];
                 state.sp -= 1;
+                const addr = state.stack[state.sp];
                 state.pc = addr;
                 std.log.debug("\tret -- PC = 0x{X:0>4}", .{addr});
             },
@@ -230,16 +397,12 @@ const State = struct {
                 std.log.debug("\tskip_eq_xy -- {}", .{state.registers[vx] == state.registers[vy]});
             },
             .load_byte => {
-                std.debug.assert(vx >= 0 and vx <= 0xF);
-
                 const byte = state.ram[state.pc + 1];
 
                 state.registers[vx] = byte;
                 std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, byte });
             },
             .add_byte => {
-                std.debug.assert(vx >= 0 and vx <= 0xF);
-
                 const byte = state.ram[state.pc + 1];
 
                 state.registers[vx] +%= byte;
@@ -247,7 +410,7 @@ const State = struct {
             },
             .set_xy => {
                 state.registers[vx] = state.registers[vy];
-                std.log.debug("\tset V[0x{X}] = V[0x{X}] ({X:0>2}", .{ vx, vy, state.registers[vy] });
+                std.log.debug("\tset V[0x{X}] = V[0x{X}] ({X:0>2})", .{ vx, vy, state.registers[vy] });
             },
             .set_or => {
                 state.registers[vx] |= state.registers[vy];
@@ -333,19 +496,20 @@ const State = struct {
                     const offset: u3 = @intCast(@rem(x, 8));
                     if (offset == 0) { // aligned
                         // test and set flag register before XOR
-                        if (state.display[row][byte_index] & ~byte >= 0) {
+                        const prev = state.display[row][byte_index];
+                        state.display[row][byte_index] ^= byte;
+                        if (prev & byte > 0) {
                             state.registers[0xF] = 1;
                         }
-                        state.display[row][byte_index] ^= byte;
                     } else { // unaligned
-                        if (state.display[row][byte_index] & ~byte >> offset >= 0) {
+                        if (state.display[row][byte_index] & (byte >> offset) > 0) {
                             state.registers[0xF] = 1;
                         }
                         // set bottom offset bits of first byte XOR with top bits of byte
                         state.display[row][byte_index] ^= byte >> offset;
                         // set top 8 - offset bits of next byte XOR with bottom bits of byte
                         if (byte_index == 7) continue;
-                        if (state.display[row][byte_index + 1] & ~byte >> offset >= 0) {
+                        if (state.display[row][byte_index + 1] & (byte << @intCast(@as(u4, 8) - offset)) > 0) {
                             state.registers[0xF] = 1;
                         }
                         state.display[row][byte_index + 1] ^= byte << @intCast(@as(u4, 8) - offset);
@@ -422,7 +586,7 @@ const State = struct {
         state.pc += 2;
     }
 
-    fn draw(state: State) void {
+    fn draw_game(state: State) void {
         for (state.display, 0..) |row, y| {
             for (row, 0..) |byte, x| {
                 for (0..8) |index| {
@@ -440,6 +604,101 @@ const State = struct {
         }
     }
 
+    fn draw_gui(state: State) void {
+        _ = rg.guiPanel(rl.Rectangle{
+            .x = game_width,
+            .y = 0,
+            .width = gui_width,
+            .height = game_height,
+        }, "instructions");
+
+        const spacing = 2;
+
+        const start_pc = if (state.pc % 2 == 0) @max(state.pc - 20, 0x0200) else @max(state.pc - 20, 0x0201);
+        const num_instructions = 20;
+        for (0..num_instructions) |i| {
+            const pc = start_pc + i * 2;
+            const offset: i32 = @intCast(i);
+            const instBytes = std.mem.readInt(u16, state.ram[pc..][0..2], .big);
+            draw_text(
+                Instruction.text(@intCast(pc), instBytes),
+                game_width + 4,
+                30 + offset * font_size + offset * spacing,
+                if (pc == state.pc) rl.Color.red else null,
+            );
+        }
+
+        _ = rg.guiPanel(rl.Rectangle{
+            .x = game_width,
+            .y = game_height,
+            .width = gui_width,
+            .height = gui_height,
+        }, "registers");
+
+        for (0..16) |i| {
+            const offset: i32 = @intCast(i);
+            draw_text(
+                rl.textFormat("V%X:\t0x%02X", .{ i, state.registers[i] }),
+                game_width + 4,
+                game_height + 30 + offset * font_size + offset * spacing,
+                null,
+            );
+        }
+
+        draw_text(
+            rl.textFormat("PC:\t0x%04X", .{state.pc}),
+            game_width + 4 + gui_width / 3,
+            game_height + 30,
+            null,
+        );
+        draw_text(
+            rl.textFormat("I:\t\t0x%04X", .{state.i}),
+            game_width + 4 + gui_width / 3,
+            game_height + 30 + font_size + spacing,
+            null,
+        );
+        draw_text(
+            rl.textFormat("DL:\t0x%04X", .{state.delay}),
+            game_width + 4 + gui_width / 3,
+            game_height + 30 + 3 * (font_size + spacing),
+            null,
+        );
+        draw_text(
+            rl.textFormat("SD:\t0x%04X", .{state.sound}),
+            game_width + 4 + gui_width / 3,
+            game_height + 30 + 4 * (font_size + spacing),
+            null,
+        );
+        draw_text(
+            rl.textFormat("ST:\t0x%04X", .{state.sp}),
+            game_width + 4 + gui_width / 3,
+            game_height + 30 + 6 * (font_size + spacing),
+            null,
+        );
+
+        for (0..16) |i| {
+            const offset: i32 = @intCast(i);
+            draw_text(
+                rl.textFormat("S%X:\t0x%02X", .{ i, state.stack[i] }),
+                game_width + 4 + gui_width / 3 * 2,
+                game_height + 30 + offset * font_size + offset * spacing,
+                null,
+            );
+        }
+
+        _ = rg.guiPanel(rl.Rectangle{
+            .x = 0,
+            .y = game_height,
+            .width = game_width,
+            .height = gui_height,
+        }, "info");
+    }
+
+    fn draw(state: State) void {
+        state.draw_game();
+        state.draw_gui();
+    }
+
     fn dumpDisplayASCII(state: State) void {
         for (state.display) |row| {
             for (row) |byte| {
@@ -450,6 +709,17 @@ const State = struct {
     }
 };
 
+fn draw_text(text: [:0]const u8, x: i32, y: i32, color: ?rl.Color) void {
+    rl.drawTextEx(
+        text_font,
+        text,
+        rl.Vector2.init(@floatFromInt(x), @floatFromInt(y)),
+        font_size,
+        0,
+        color orelse rl.Color.ray_white,
+    );
+}
+
 fn hexDump(buf: []const u8) void {
     for (0..buf.len / 16) |offset| {
         const addr = offset * 16;
@@ -458,13 +728,6 @@ fn hexDump(buf: []const u8) void {
             std.debug.print(" {X:0>2}{X:0>2}", .{ buf[addr + i * 2], buf[addr + i * 2 + 1] });
         }
         std.debug.print("\n", .{});
-    }
-}
-
-fn process(state: *State) void {
-    while (true) {
-        state.step();
-        std.Thread.sleep(std.time.ns_per_s / 500);
     }
 }
 
@@ -502,11 +765,14 @@ fn delay_timer(state: *State) void {
 }
 
 pub fn main() !void {
-    const screenWidth = 64 * resolution_multiplier;
-    const screenHeight = 32 * resolution_multiplier;
-
-    rl.initWindow(screenWidth, screenHeight, "zip-8");
+    rl.setConfigFlags(rl.ConfigFlags{
+        .msaa_4x_hint = true,
+    });
+    rl.initWindow(game_width + gui_width, game_height + gui_height, "zip-8");
     defer rl.closeWindow();
+
+    text_font = try rl.loadFontEx("src/fira_mono.otf", font_size, null);
+    rg.guiLoadStyle("src/style_amber.rgs");
 
     var state = try State.init();
     // try state.loadRom("roms/1-chip8-logo.ch8");
@@ -515,13 +781,11 @@ pub fn main() !void {
     // try state.loadRom("roms/4-flags.ch8");
     // try state.loadRom("roms/5-quirks.ch8");
     // try state.loadRom("roms/maze.ch8");
-    try state.loadRom("roms/airplane.ch8"); // not working
+    // try state.loadRom("roms/airplane.ch8"); // not working
     // try state.loadRom("roms/rps.ch8");
-    // try state.loadRom("roms/br8kout.ch8"); // not working
+    try state.loadRom("roms/br8kout.ch8"); // not working
     // try state.loadRom("roms/delay_timer_test.ch8");
-
-    const thread = try std.Thread.spawn(.{}, process, .{&state});
-    std.Thread.detach(thread);
+    // try state.loadRom("roms/draw_offset.ch8");
 
     const sound_timer_thread = try std.Thread.spawn(.{}, sound_timer, .{&state});
     std.Thread.detach(sound_timer_thread);
@@ -529,11 +793,22 @@ pub fn main() !void {
     const delay_timer_thread = try std.Thread.spawn(.{}, delay_timer, .{&state});
     std.Thread.detach(delay_timer_thread);
 
+    rl.setTargetFPS(60);
+    var should_step = true;
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
         defer rl.endDrawing();
 
         rl.clearBackground(rl.Color.black);
         state.draw();
+
+        if (rl.isKeyPressed(rl.KeyboardKey.s)) {
+            should_step = true;
+        }
+
+        if (should_step) {
+            state.step();
+            should_step = true;
+        }
     }
 }

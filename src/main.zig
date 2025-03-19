@@ -107,7 +107,12 @@ const State = struct {
 
     fn step(state: *State) void {
         const instruction = Instruction.decode(state.pcValue());
-        std.log.debug("instruction 0x{X:0>4}: 0x{X:0>2}{X:0>2} -- {}", .{ state.pc, state.ram[state.pc], state.ram[state.pc + 1], instruction.op_code().? });
+        std.log.debug("instruction 0x{X:0>4}: 0x{X:0>2}{X:0>2} -- {}", .{
+            state.pc,
+            state.ram[state.pc],
+            state.ram[state.pc + 1],
+            instruction.op_code().?,
+        });
 
         const vx = instruction.xyn.x;
         const vy = instruction.xyn.y;
@@ -497,8 +502,8 @@ pub fn main() !void {
     // try state.loadRom("roms/5-quirks.ch8");
     // try state.loadRom("roms/maze.ch8");
     // try state.loadRom("roms/airplane.ch8");
-    try state.loadRom("roms/rps.ch8");
-    // try state.loadRom("roms/br8kout.ch8");
+    // try state.loadRom("roms/rps.ch8");
+    try state.loadRom("roms/br8kout.ch8");
     // try state.loadRom("roms/delay_timer_test.ch8");
     // try state.loadRom("roms/draw_offset.ch8");
 

@@ -107,12 +107,6 @@ const State = struct {
 
     fn step(state: *State) void {
         const instruction = Instruction.decode(state.pcValue());
-        std.log.debug("instruction 0x{X:0>4}: 0x{X:0>2}{X:0>2} -- {}", .{
-            state.pc,
-            state.ram[state.pc],
-            state.ram[state.pc + 1],
-            instruction.op_code().?,
-        });
 
         const vx = instruction.xyn.x;
         const vy = instruction.xyn.y;
@@ -122,7 +116,6 @@ const State = struct {
 
         switch (instruction.op_code().?) {
             .clear => {
-                std.log.debug("\tclear", .{});
                 state.display = @splat(@splat(0));
             },
             .ret => {
@@ -130,102 +123,83 @@ const State = struct {
                 state.sp -= 1;
                 const addr = state.stack[state.sp];
                 state.pc = addr;
-                std.log.debug("\tret -- PC = 0x{X:0>4}", .{addr});
             },
             .jump => {
                 state.pc = nnn;
-                std.log.debug("\tjump -- PC = 0x{X:0>4}", .{nnn});
                 return;
             },
             .call => {
                 state.stack[state.sp] = state.pc;
                 state.sp += 1;
                 state.pc = nnn;
-                std.log.debug("\tcall -- PC = 0x{X:0>4}", .{nnn});
                 return;
             },
             .skip_eq_xnn => {
                 if (state.registers[vx] == nn) {
                     state.pc += 2;
                 }
-                std.log.debug("\tskip_eq_xnn -- {}", .{state.registers[vx] == nn});
             },
             .skip_neq_xnn => {
                 if (state.registers[vx] != nn) {
                     state.pc += 2;
                 }
-                std.log.debug("\tskip_neq_xnn -- {}", .{state.registers[vx] != nn});
             },
             .skip_eq_xy => {
                 if (state.registers[vx] == state.registers[vy]) {
                     state.pc += 2;
                 }
-                std.log.debug("\tskip_eq_xy -- {}", .{state.registers[vx] == state.registers[vy]});
             },
             .load_byte => {
                 state.registers[vx] = nn;
-                std.log.debug("\tload byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, nn });
             },
             .add_byte => {
                 state.registers[vx] +%= nn;
-                std.log.debug("\tadd byte -- V[0x{X}] = 0x{X:0>2}", .{ vx, nn });
             },
             .set_xy => {
                 state.registers[vx] = state.registers[vy];
-                std.log.debug("\tset V[0x{X}] = V[0x{X}] ({X:0>2})", .{ vx, vy, state.registers[vy] });
             },
             .set_or => {
                 state.registers[vx] |= state.registers[vy];
-                std.log.debug("\tset V[0x{X}] |= V[0x{X}]", .{ vx, vy });
             },
             .set_and => {
                 state.registers[vx] &= state.registers[vy];
-                std.log.debug("\tset V[0x{X}] &= V[0x{X}]", .{ vx, vy });
             },
             .set_xor => {
                 state.registers[vx] ^= state.registers[vy];
-                std.log.debug("\tset V[0x{X}] ^= V[0x{X}]", .{ vx, vy });
             },
             .add_xy => {
                 const result = @addWithOverflow(state.registers[vx], state.registers[vy]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = result[1];
-                std.log.debug("\tadd_xy V[0x{X}] += V[0x{X}]", .{ vx, vy });
             },
             .sub_xy => {
                 const result = @subWithOverflow(state.registers[vx], state.registers[vy]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
-                std.log.debug("\tsub_xy V[0x{X}] -= V[0x{X}]", .{ vx, vy });
             },
             .set_sh_right => {
                 state.registers[vx] = state.registers[vy];
                 const flag = state.registers[vx] & 0x01;
                 state.registers[vx] = state.registers[vy] >> 1;
                 state.registers[0xF] = flag;
-                std.log.debug("\tshift_right_1 V[0x{X}] = V[0x{X}] >> 1", .{ vx, vy });
             },
             .sub_yx => {
                 const result = @subWithOverflow(state.registers[vy], state.registers[vx]);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = if (result[1] == 0b1) 0b0 else 0b1;
-                std.log.debug("\tsub_yx V[0x{X}] = V[0x{X}] - V[0x{X}]", .{ vx, vy, vx });
             },
             .set_sh_left => {
                 const result = @shlWithOverflow(state.registers[vy], 1);
                 state.registers[vx] = result[0];
                 state.registers[0xF] = result[1];
-                std.log.debug("\tshift_left_1 V[0x{X}] = V[0x{X}] << 1", .{ vx, vy });
             },
             .skip_neq_xy => {
                 if (state.registers[vx] != state.registers[vy]) {
                     state.pc += 2;
                 }
-                std.log.debug("\tskip_neq_xy -- {}", .{state.registers[vx] != state.registers[vy]});
             },
             .load_addr => {
                 state.i = nnn;
-                std.log.debug("\tload addr -- I = 0x{X:0>4}", .{nnn});
             },
             .jump_v0 => {
                 state.pc = state.registers[0x0] + nnn;
@@ -240,7 +214,6 @@ const State = struct {
 
                 const sprite_len = n;
                 const sprite = state.ram[state.i..][0..sprite_len];
-                std.log.debug("\tdraw {any} at {},{} from registers 0x{X} 0x{X}", .{ sprite, x, y, vx, vy });
 
                 // reset flag register
                 state.registers[0xF] = 0;
@@ -276,16 +249,12 @@ const State = struct {
                 }
             },
             .skip_input => {
-                std.log.debug("\tchecking for IS key pressed: {} {}", .{ state.registers[vx], keys[state.registers[vx]] });
                 if (rl.isKeyDown(keys[state.registers[vx]])) {
-                    std.log.debug("\t\tskipping instruction!", .{});
                     state.pc += 2;
                 }
             },
             .skip_not_input => {
-                std.log.debug("\tchecking for NOT key pressed: {} {}", .{ state.registers[vx], keys[state.registers[vx]] });
                 if (rl.isKeyUp(keys[state.registers[vx]])) {
-                    std.log.debug("\t\tskipping instruction!", .{});
                     state.pc += 2;
                 }
             },
@@ -309,12 +278,10 @@ const State = struct {
             },
             .add_i => {
                 state.i += state.registers[vx];
-                std.log.debug("\tadd_i I += V[0x{X}]", .{vx});
             },
             .font => {
                 const sprite_num: u16 = state.registers[vx] & 0x0F;
                 state.i = 0x0000 + sprite_num * 5;
-                std.log.debug("\tfont I = 0x{X:0>4} -- sprite {}", .{ state.i, sprite_num });
             },
             .bcd => {
                 const hundreds = (state.registers[vx] / 100) % 10;
@@ -360,12 +327,12 @@ const State = struct {
     }
 
     fn draw_gui(state: State) void {
-        _ = rg.guiPanel(rl.Rectangle{
-            .x = game_width,
-            .y = 0,
-            .width = gui_width,
-            .height = game_height,
-        }, "instructions");
+        _ = rg.guiPanel(rl.Rectangle.init(
+            game_width,
+            0,
+            gui_width,
+            game_height,
+        ), "instructions");
 
         const spacing = 2;
 
@@ -384,12 +351,12 @@ const State = struct {
             );
         }
 
-        _ = rg.guiPanel(rl.Rectangle{
-            .x = game_width,
-            .y = game_height,
-            .width = gui_width,
-            .height = gui_height,
-        }, "registers");
+        _ = rg.guiPanel(rl.Rectangle.init(
+            game_width,
+            game_height,
+            gui_width,
+            gui_height,
+        ), "registers");
 
         for (0..16) |i| {
             const offset: i32 = @intCast(i);
@@ -442,12 +409,12 @@ const State = struct {
             );
         }
 
-        _ = rg.guiPanel(rl.Rectangle{
-            .x = 0,
-            .y = game_height,
-            .width = game_width,
-            .height = gui_height,
-        }, "info");
+        _ = rg.guiPanel(rl.Rectangle.init(
+            0,
+            game_height,
+            game_width,
+            gui_height,
+        ), "info");
     }
 
     fn draw(state: State) void {
@@ -491,8 +458,8 @@ pub fn main() !void {
     rl.initWindow(game_width + gui_width, game_height + gui_height, "zip-8");
     defer rl.closeWindow();
 
-    text_font = try rl.loadFontEx("src/fira_mono.otf", font_size, null);
-    rg.guiLoadStyle("src/style_amber.rgs");
+    text_font = try rl.loadFontEx("resources/fira_mono.otf", font_size, null);
+    rg.guiLoadStyle("resources/style_amber.rgs");
 
     var state = try State.init();
     // try state.loadRom("roms/1-chip8-logo.ch8");
@@ -512,6 +479,7 @@ pub fn main() !void {
     while (!rl.windowShouldClose()) {
         rl.beginDrawing();
         defer rl.endDrawing();
+        rl.clearBackground(rl.Color.black);
 
         if (state.delay > 0) {
             state.delay -= 1;

@@ -9,6 +9,7 @@
 
 ### Above combination will ignore all files without extension ###
 
+!Makefile
 .direnv/
 *.o
 .zig-cache

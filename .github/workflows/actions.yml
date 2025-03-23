@@ -21,9 +21,12 @@ jobs:
         with:
           version: 4.0.5
           actions-cache-folder: 'emsdk-cache'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.40.0
       - name: Install Wayland deps
         run: sudo apt-get update && sudo apt-get install -y libwayland-dev wayland-protocols
-      - run: make wasm
+      - run: just build-wasm
         env:
           EMSDK_PATH: ${{ github.workspace }}/emsdk-cache/emsdk-main
       - uses: actions/upload-pages-artifact@v3

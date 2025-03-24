@@ -50,6 +50,10 @@ pub fn build(b: *std.Build) !void {
         link_step.addArg("--shell-file");
         link_step.addArg("src/shell_minimal.html");
 
+        // TODO: figure out how to enable this with flag
+        //      and create just debug command
+        // link_step.addArg("-g");
+
         b.getInstallStep().dependOn(&link_step.step);
         const run_step = try rlz.emcc.emscriptenRunStep(b);
         run_step.step.dependOn(&link_step.step);
